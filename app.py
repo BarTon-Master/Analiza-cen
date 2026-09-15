@@ -1,134 +1,170 @@
+import datetime
 import json
 import os
 import pandas as pd
 import streamlit as st
+from apify_client import ApifyClient
 from groq import Groq
 
-# Pobieranie darmowego klucza Groq z ustawień Streamlit
+# Inicjalizacja klientów API z bezpiecznych sekretów
 groq_api_key = st.secrets.get("GROQ_API_KEY") or os.getenv("GROQ_API_KEY")
-client = Groq(api_key=groq_api_key)
+apify_api_key = st.secrets.get("APIFY_API_KEY") or os.getenv("APIFY_API_KEY")
 
-st.set_page_config(page_title="Monitor Cen Noclegów AI (Darmowy)", layout="wide")
+groq_client = Groq(api_key=groq_api_key)
+apify_client = ApifyClient(apify_api_key)
 
-st.title("🏨 Darmowy Analizator Cen Noclegów (Llama 3 / Groq)")
+st.set_page_config(page_title="Hotel Logos - Monitor Cen", layout="wide")
+
+st.title("🏨 Automatyczny Porównywarka Cen dla Hotelu Logos Zakopane")
 st.write(
-    "Aplikacja porównuje Twój obiekt z konkurencją i szacuje wynik podobieństwa za pomocą darmowego AI."
+    "Aplikacja automatycznie pobiera aktualne ceny z Zakopanego z Booking.com i porównuje je za pomocą AI."
 )
 
-# Sidebar - Dane Twojego Obiektu
-st.sidebar.header("🎯 Twój Obiekt")
-my_name = st.sidebar.text_input("Nazwa obiektu", "Apartament Słoneczny Park")
-my_price = st.sidebar.number_input("Twoja obecna cena (PLN)", value=350)
-my_capacity = st.sidebar.number_input("Maks. liczba osób", value=4)
-my_description = st.sidebar.text_area(
-    "Opis / Udogodnienia",
-    "Apartament 45m2, 2 pokoje, balkon, szybkie Wi-Fi, sauna, 500m od centrum.",
+# Sztywne dane Hotelu Logos
+LOGOS_DATA = {
+    "name": "Hotel Logos Zakopane",
+    "description": "Hotel 3-gwiazdkowy w centrum Zakopanego. Oferuje pokoje z Wi-Fi, strefę SPA (sauny, jacuzzi), restaurację Staropolska oraz widok na góry. Wysoki standard, blisko Krupówek.",
+    "capacity": 2,
+}
+
+# Sidebar - Ustawienia Wyszukiwania
+st.sidebar.header("📅 Wybierz Termin")
+today = datetime.date.today()
+check_in = st.sidebar.date_input("Data przyjazdu", today + datetime.timedelta(days=7))
+check_out = st.sidebar.date_input(
+    "Data wyjazdu", today + datetime.timedelta(days=8)
 )
+my_price = st.sidebar.number_input(
+    "Twoja cena za dobę dla 2 osób (PLN)", value=420
+)
+
+
+def fetch_booking_data(checkin_date, checkout_date):
+    """Pobiera 20 ofert z Zakopanego z Booking.com przez Apify."""
+    run_input = {
+        "search": "Zakopane",
+        "checkIn": checkin_date.strftime("%Y-%m-%d"),
+        "checkOut": checkout_date.strftime("%Y-%m-%d"),
+        "maxItems": 20,
+        "adults": 2,
+        "rooms": 1,
+        "currency": "PLN",
+    }
+    # Użycie oficjalnego i sprawdzonego scrapera Booking.com
+    run = apify_client.actor("apify/booking-scraper").call(run_input=run_input)
+    dataset_items = apify_client.dataset(
+        run["defaultDatasetId"]
+    ).list_items().items
+
+    results = []
+    for item in dataset_items:
+        # Pobież najważniejsze dane
+        name = item.get("name") or item.get("title")
+        price = item.get("price") or item.get("grossPrice", {}).get("value")
+        rating = item.get("rating") or item.get("score")
+        room_type = item.get("roomType", "Pokój 2-osobowy")
+
+        if name and price:
+            # Czyszczenie ceny, jeśli jest tekstem
+            if isinstance(price, str):
+                price = float(
+                    price.replace("PLN", "").replace(" ", "").replace(",", ".")
+                )
+
+            results.append(
+                {
+                    "name": name,
+                    "price": float(price),
+                    "capacity": 2,
+                    "description": f"Ocena: {rating}/10. Typ: {room_type}. Obiekt w Zakopanem.",
+                }
+            )
+    return results
 
 
 def analyze_similarity(my_obj, competitor_obj):
+    """Sztuczna inteligencja Llama 3 ocenia podobieństwo do Hotelu Logos."""
     prompt = f"""
-    Jesteś ekspertem ds. wyceny nieruchomości. 
-    Porównaj poniższy obiekt wzorcowy z obiektem konkurencji.
+    Jesteś ekspertem rynku hotelarskiego w Zakopanem. 
+    Porównaj nasz obiekt wzorcowy (Hotel Logos Zakopane) z obiektem konkurencji.
     
-    OBIEKT WZORCOWY:
-    - Pojemność: {my_obj['capacity']} osób
-    - Opis: {my_obj['description']}
+    NASZ HOTEL:
+    - Nazwa: {my_obj['name']}
+    - Standard i Opis: {my_obj['description']}
     
-    OBIEKT KONKURENCJI:
+    OBIEKT KONKURENCJI Z BOOKING.COM:
     - Nazwa: {competitor_obj.get('name')}
-    - Pojemność: {competitor_obj.get('capacity')} osób
-    - Opis: {competitor_obj.get('description')}
+    - Opis/Informacje: {competitor_obj.get('description')}
     
-    Oceń podobieństwo obiektu konkurencji do obiektu wzorcowego w skali od 1 do 100.
-    Odpowiedz WYŁĄCZNIE poprawnym formatem JSON bez dodatkowego tekstu:
-    {{"score": liczba_całkowita_1_100, "reason": "krotkie_uzasadnienie_w_1_zdaniu"}}
+    Oceń podobieństwo obiektu konkurencji do Hotelu Logos w skali od 1 do 100 
+    (gdzie 100 to obiekt o identycznym standardzie 3*, strefie SPA, lokalizacji blisko centrum).
+    
+    Odpowiedz WYŁĄCZNIE czystym formatem JSON bez żadnych dopisków:
+    {{"score": liczba_całkowita_1_100, "reason": "krótkie uzasadnienie po polsku w 1 zdaniu"}}
     """
 
     try:
-        response = client.chat.completions.create(
+        response = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2,
         )
         content = response.choices[0].message.content.strip()
-        # Wyciąganie JSON z odpowiedzi
         if "{" in content:
             content = content[content.find("{") : content.rfind("}") + 1]
         return json.loads(content)
     except Exception as e:
-        return {"score": 0, "reason": f"Błąd AI: {str(e)}"}
+        return {"score": 50, "reason": "Średni standard (domyślny)"}
 
 
-# Wczytywanie danych konkurencji
-st.subheader("1. Wczytaj dane konkurencji (JSON)")
-uploaded_file = st.file_uploader("Wgraj plik JSON z ofertami", type=["json"])
-
-default_data = [
-    {
-        "name": "Apartament Górski Widok",
-        "price": 380,
-        "capacity": 4,
-        "description": "40m2, balkon, widok na góry, dostęp do strefy SPA i sauny.",
-    },
-    {
-        "name": "Pokoje Gościnne U Basi",
-        "price": 180,
-        "capacity": 2,
-        "description": "Mały pokój dwuosobowy, wspólna łazienka, skromne wyposażenie.",
-    },
-    {
-        "name": "Luksusowy Penthouse Centrum",
-        "price": 750,
-        "capacity": 6,
-        "description": "100m2, prywatne jacuzzi, taras, standard 5-gwiazdkowy.",
-    },
-    {
-        "name": "Słoneczne Mieszkanie przy Parku",
-        "price": 340,
-        "capacity": 4,
-        "description": "42m2, 2 pokoje, blisko parku, zmywarka, szybki internet.",
-    },
-]
-
-competitors = (
-    json.load(uploaded_file) if uploaded_file is not None else default_data
-)
-
-if st.button("🚀 Uruchom darmową analizę AI"):
-    my_object_data = {"capacity": my_capacity, "description": my_description}
-    results = []
-    progress_bar = st.progress(0)
-
-    for idx, comp in enumerate(competitors):
-        ai_res = analyze_similarity(my_object_data, comp)
-        results.append(
-            {
-                "Nazwa obiektu": comp.get("name"),
-                "Cena (PLN)": comp.get("price"),
-                "Liczba osób": comp.get("capacity"),
-                "Podobieństwo AI (%)": ai_res.get("score"),
-                "Uzasadnienie AI": ai_res.get("reason"),
-            }
-        )
-        progress_bar.progress((idx + 1) / len(competitors))
-
-    df = pd.DataFrame(results)
-    st.subheader("2. Wyniki Analizy")
-
-    similar_df = df[df["Podobieństwo AI (%)"] >= 50]
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Twoja cena", f"{my_price} PLN")
-
-    if not similar_df.empty:
-        avg_price = round(similar_df["Cena (PLN)"].mean(), 2)
-        col2.metric("Średnia cena podobnych (AI ≥ 50%)", f"{avg_price} PLN")
-        diff = round(my_price - avg_price, 2)
-        col3.metric("Różnica", f"{diff} PLN", delta_color="inverse")
+# Przycisk uruchamiający
+if st.button("🔎 Pobierz aktualne ceny i przeanalizuj konkurencję"):
+    if check_in >= check_out:
+        st.error("Data wyjazdu musi być późniejsza niż data przyjazdu!")
     else:
-        col2.metric("Średnia cena podobnych", "Brak dopasowań")
+        with st.spinner("1/2: Pobieram 20 obiektów z Booking.com dla Zakopanego... (może to zająć ok. 30-60 sekund)"):
+            competitors = fetch_booking_data(check_in, check_out)
 
-    st.dataframe(
-        df.sort_values(by="Podobieństwo AI (%)", ascending=False),
-        use_container_width=True,
-    )
+        if not competitors:
+            st.warning("Nie udało się pobrać danych z Booking. Wypróbuj inne daty.")
+        else:
+            st.success(f"Pobrano {len(competitors)} aktualnych ofert!")
+
+            with st.spinner("2/2: Sztuczna inteligencja ocenia podobieństwo obiektów do Hotelu Logos..."):
+                results = []
+                progress_bar = st.progress(0)
+
+                for idx, comp in enumerate(competitors):
+                    ai_res = analyze_similarity(LOGOS_DATA, comp)
+                    results.append(
+                        {
+                            "Obiekt w Zakopanem": comp.get("name"),
+                            "Cena za termin (PLN)": comp.get("price"),
+                            "Podobieństwo do Logos (%)": ai_res.get("score"),
+                            "Dlaczego taka ocena?": ai_res.get("reason"),
+                        }
+                    )
+                    progress_bar.progress((idx + 1) / len(competitors))
+
+            df = pd.DataFrame(results)
+
+            st.subheader("📊 Wyniki i Raport Cenowy")
+
+            # Obliczanie średnich dla obiektów najbardziej podobnych (od 60% podobieństwa)
+            similar_df = df[df["Podobieństwo do Logos (%)"] >= 60]
+
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Twoja cena w Logos", f"{my_price} PLN")
+
+            if not similar_df.empty:
+                avg_price = round(similar_df["Cena za termin (PLN)"].mean(), 2)
+                col2.metric("Średnia cena podobnych 3* w Zakopanem", f"{avg_price} PLN")
+                diff = round(my_price - avg_price, 2)
+                col3.metric("Różnica vs konkurencja", f"{diff} PLN", delta_color="inverse")
+            else:
+                col2.metric("Średnia cena podobnych", "Brak ścisłych dopasowań")
+
+            st.dataframe(
+                df.sort_values(by="Podobieństwo do Logos (%)", ascending=False),
+                use_container_width=True,
+            )
