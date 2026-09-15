@@ -2,17 +2,17 @@ import json
 import os
 import pandas as pd
 import streamlit as st
-from openai import OpenAI
+from groq import Groq
 
-# Inicjalizacja klienta OpenAI z klucza w bezpiecznych ustawieniach Streamlit
-api_key = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
-client = OpenAI(api_key=api_key)
+# Pobieranie darmowego klucza Groq z ustawień Streamlit
+groq_api_key = st.secrets.get("GROQ_API_KEY") or os.getenv("GROQ_API_KEY")
+client = Groq(api_key=groq_api_key)
 
-st.set_page_config(page_title="Monitor Cen Noclegów AI", layout="wide")
+st.set_page_config(page_title="Monitor Cen Noclegów AI (Darmowy)", layout="wide")
 
-st.title("🏨 Analizator i Porównywarka Cen Noclegów AI")
+st.title("🏨 Darmowy Analizator Cen Noclegów (Llama 3 / Groq)")
 st.write(
-    "Aplikacja porównuje Twój obiekt z konkurencją i szacuje wynik podobieństwa za pomocą AI."
+    "Aplikacja porównuje Twój obiekt z konkurencją i szacuje wynik podobieństwa za pomocą darmowego AI."
 )
 
 # Sidebar - Dane Twojego Obiektu
@@ -28,7 +28,7 @@ my_description = st.sidebar.text_area(
 
 def analyze_similarity(my_obj, competitor_obj):
     prompt = f"""
-    Jesteś ekspertem ds. wyceny nieruchomości i noclegów. 
+    Jesteś ekspertem ds. wyceny nieruchomości. 
     Porównaj poniższy obiekt wzorcowy z obiektem konkurencji.
     
     OBIEKT WZORCOWY:
@@ -40,23 +40,24 @@ def analyze_similarity(my_obj, competitor_obj):
     - Pojemność: {competitor_obj.get('capacity')} osób
     - Opis: {competitor_obj.get('description')}
     
-    Oceń podobieństwo obiektu konkurencji do obiektu wzorcowego w skali od 1 do 100 
-    (gdzie 100 to niemal identyczny standard, wielkość, lokalizacja i udogodnienia).
-    
-    Odpowiedz TYLKO w formacie JSON:
+    Oceń podobieństwo obiektu konkurencji do obiektu wzorcowego w skali od 1 do 100.
+    Odpowiedz WYŁĄCZNIE poprawnym formatem JSON bez dodatkowego tekstu:
     {{"score": liczba_całkowita_1_100, "reason": "krotkie_uzasadnienie_w_1_zdaniu"}}
     """
 
     try:
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"},
             temperature=0.2,
         )
-        return json.loads(response.choices[0].message.content)
+        content = response.choices[0].message.content.strip()
+        # Wyciąganie JSON z odpowiedzi
+        if "{" in content:
+            content = content[content.find("{") : content.rfind("}") + 1]
+        return json.loads(content)
     except Exception as e:
-        return {"score": 0, "reason": f"Błąd API: {str(e)}"}
+        return {"score": 0, "reason": f"Błąd AI: {str(e)}"}
 
 
 # Wczytywanie danych konkurencji
@@ -90,17 +91,12 @@ default_data = [
     },
 ]
 
-if uploaded_file is not None:
-    competitors = json.load(uploaded_file)
-else:
-    st.info(
-        "Używam przykładowych danych testowych. Możesz wgrać własny plik JSON powyżej."
-    )
-    competitors = default_data
+competitors = (
+    json.load(uploaded_file) if uploaded_file is not None else default_data
+)
 
-if st.button("🚀 Uruchom analizę podobieństwa przez AI"):
+if st.button("🚀 Uruchom darmową analizę AI"):
     my_object_data = {"capacity": my_capacity, "description": my_description}
-
     results = []
     progress_bar = st.progress(0)
 
@@ -118,19 +114,16 @@ if st.button("🚀 Uruchom analizę podobieństwa przez AI"):
         progress_bar.progress((idx + 1) / len(competitors))
 
     df = pd.DataFrame(results)
-
     st.subheader("2. Wyniki Analizy")
 
     similar_df = df[df["Podobieństwo AI (%)"] >= 50]
-
     col1, col2, col3 = st.columns(3)
     col1.metric("Twoja cena", f"{my_price} PLN")
 
     if not similar_df.empty:
-        avg_similar_price = round(similar_df["Cena (PLN)"].mean(), 2)
-        col2.metric("Średnia cena podobnych (AI ≥ 50%)", f"{avg_similar_price} PLN")
-
-        diff = round(my_price - avg_similar_price, 2)
+        avg_price = round(similar_df["Cena (PLN)"].mean(), 2)
+        col2.metric("Średnia cena podobnych (AI ≥ 50%)", f"{avg_price} PLN")
+        diff = round(my_price - avg_price, 2)
         col3.metric("Różnica", f"{diff} PLN", delta_color="inverse")
     else:
         col2.metric("Średnia cena podobnych", "Brak dopasowań")
