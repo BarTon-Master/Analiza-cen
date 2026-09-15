@@ -52,12 +52,23 @@ def fetch_booking_data(checkin_date, checkout_date):
     }
 
     try:
-        # Oficjalny i aktualny Actor Booking.com w Apify
-        run = apify_client.actor("datascrapers/booking-com-scraper").call(
+        # Oficjalna nazwa Actora Booking na Apify (apify~booking-scraper)
+        run = apify_client.actor("apify~booking-scraper").call(
             run_input=run_input
         )
+
+        # Bezpieczne pobranie defaultDatasetId (obsługuje zarówno obiekty jak i słowniki)
+        dataset_id = (
+            run.get("defaultDatasetId")
+            if isinstance(run, dict)
+            else getattr(run, "default_dataset_id", getattr(run, "defaultDatasetId", None))
+        )
+
+        if not dataset_id and hasattr(run, "__getitem__"):
+            dataset_id = run["defaultDatasetId"]
+
         dataset_items = (
-            apify_client.dataset(run["defaultDatasetId"]).list_items().items
+            apify_client.dataset(dataset_id).list_items().items
         )
 
         results = []
@@ -97,7 +108,6 @@ def fetch_booking_data(checkin_date, checkout_date):
         st.warning(
             f"Nie udało się połączyć z API Apify ({str(e)}). Ładuję przykładową bazę awaryjną dla Zakopanego..."
         )
-        # Zastępcze dane na przypadek błędu połączenia
         return [
             {
                 "name": "Hotel Czarny Potok 3*",
@@ -173,7 +183,7 @@ if st.button("🔎 Pobierz ceny i przeanalizuj konkurencję"):
     if check_in >= check_out:
         st.error("Data wyjazdu musi być późniejsza niż data przyjazdu!")
     else:
-        with st.spinner("1/2: Pobieranie aktualnych cen z Zakopanego..."):
+        with st.spinner("1/2: Pobieranie aktualnych cen z Zakopanego z Booking.com... (trwa ok. 20-40 sekund)"):
             competitors = fetch_booking_data(check_in, check_out)
 
         if competitors:
@@ -205,7 +215,7 @@ if st.button("🔎 Pobierz ceny i przeanalizuj konkurencję"):
             similar_df = df[df["Podobieństwo do Logos (%)"] >= 50]
 
             col1, col2, col3 = st.columns(3)
-            col1.metric("Twoja uśredniona cena", f"{my_price} PLN")
+            col1.metric("Twoja cena (Logos)", f"{my_price} PLN")
 
             if not similar_df.empty:
                 avg_price = round(similar_df["Cena za dobę (PLN)"].mean(), 2)
