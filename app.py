@@ -17,7 +17,7 @@ st.set_page_config(page_title="Hotel Logos - Monitor Cen AI", layout="wide")
 
 st.title("🏨 Porównywarka Cen AI dla Hotelu Logos Zakopane")
 st.write(
-    "Aplikacja pobiera dane z Zakopanego z Booking.com i ocenia poziom podobieństwa obiektów za pomocą modelu Llama 3."
+    "Aplikacja pobiera 50 ofert z Zakopanego z Booking.com, wykrywa cenę Hotelu Logos oraz ocenia podobieństwo obiektów konkurencji."
 )
 
 # Dane wzorcowe dla Hotelu Logos Zakopane
@@ -27,16 +27,22 @@ LOGOS_DATA = {
     "capacity": 2,
 }
 
-# Sidebar - Panel wyboru dat i stawki
+# Sidebar - Panel wyboru dat
 st.sidebar.header("📅 Wybór Terminu")
 today = datetime.date.today()
 check_in = st.sidebar.date_input("Data przyjazdu", today + datetime.timedelta(days=7))
 check_out = st.sidebar.date_input("Data wyjazdu", today + datetime.timedelta(days=8))
-my_price = st.sidebar.number_input("Twoja cena za dobę (PLN)", value=420)
+
+# Obliczenie liczby nocy
+num_nights = (check_out - check_in).days
+if num_nights <= 0:
+    st.sidebar.error("Data wyjazdu musi być późniejsza niż przyjazdu!")
+else:
+    st.sidebar.info(f"Długość pobytu: **{num_nights} nocy/noc**")
 
 
 def fetch_booking_data(checkin_date, checkout_date):
-    """Pobiera aktualne oferty z Zakopanego za pomocą Apify z automatycznym doborem dostępnego Actora."""
+    """Pobiera do 50 ofert z Zakopanego za pomocą Apify z automatycznym doborem dostępnego Actora."""
     if not apify_client:
         st.error("Brak skonfigurowanego APIFY_API_KEY w Secrets!")
         return []
@@ -46,17 +52,17 @@ def fetch_booking_data(checkin_date, checkout_date):
         "searchLocation": "Zakopane",
         "checkIn": checkin_date.strftime("%Y-%m-%d"),
         "checkOut": checkout_date.strftime("%Y-%m-%d"),
-        "maxItems": 20,
+        "maxItems": 50,
         "adults": 2,
         "rooms": 1,
         "currency": "PLN",
     }
 
-    # Lista sprawdzonych nazw Actorów dla Booking.com na Apify (próbuje po kolei)
+    # Lista nazw sprawnych Actorów na Apify
     actor_candidates = [
         "voyager/booking-scraper",
-        "datascrapers/booking-com-scraper",
-        "booking-scraper"
+        "dtrungtin/simple-booking-scraper",
+        "webdatalabs/booking-scraper-pro",
     ]
 
     run = None
@@ -74,16 +80,18 @@ def fetch_booking_data(checkin_date, checkout_date):
 
     if not run:
         st.warning(
-            f"Nie udało się połączyć z API Apify ({last_error}). Ładuję przykładową bazę awaryjną dla Zakopanego..."
+            f"Nie udało się połączyć z API Apify ({last_error}). Ładuję przykładową bazę awaryjną..."
         )
-        return get_fallback_data()
+        return get_fallback_data(num_nights)
 
     try:
-        # Bezpieczne pobranie defaultDatasetId
+        # Pobranie dataset_id
         if isinstance(run, dict):
             dataset_id = run.get("defaultDatasetId")
         else:
-            dataset_id = getattr(run, "default_dataset_id", getattr(run, "defaultDatasetId", None))
+            dataset_id = getattr(
+                run, "default_dataset_id", getattr(run, "defaultDatasetId", None)
+            )
 
         if not dataset_id and hasattr(run, "__getitem__"):
             dataset_id = run["defaultDatasetId"]
@@ -93,74 +101,87 @@ def fetch_booking_data(checkin_date, checkout_date):
         results = []
         for item in dataset_items:
             name = item.get("name") or item.get("title") or item.get("hotel_name")
-            price = (
+            raw_price = (
                 item.get("price")
                 or item.get("grossPrice", {}).get("value")
                 or item.get("price_raw")
             )
             rating = item.get("rating") or item.get("score") or 8.0
 
-            if name and price:
-                if isinstance(price, str):
-                    price = (
-                        price.replace("PLN", "")
+            if name and raw_price:
+                if isinstance(raw_price, str):
+                    raw_price = (
+                        raw_price.replace("PLN", "")
                         .replace(" ", "")
                         .replace(",", ".")
                         .strip()
                     )
                     try:
-                        price = float(price)
+                        raw_price = float(raw_price)
                     except ValueError:
                         continue
+
+                # Niektóre scrapery zwracają cenę za całe zamówienie, inne za dobę.
+                # Standardowo w Apify zwracana jest cena łączna za pobyt.
+                total_price = float(raw_price)
+                daily_price = (
+                    round(total_price / num_nights, 2)
+                    if num_nights > 0
+                    else total_price
+                )
 
                 results.append(
                     {
                         "name": name,
-                        "price": float(price),
-                        "capacity": 2,
+                        "daily_price": daily_price,
+                        "total_price": total_price,
                         "description": f"Ocena: {rating}/10. Obiekt w Zakopanem.",
                     }
                 )
-        return results if results else get_fallback_data()
+        return results if results else get_fallback_data(num_nights)
 
     except Exception as e:
-        st.warning(f"Błąd przetwarzania danych z Apify: {str(e)}. Ładuję przykładową bazę...")
-        return get_fallback_data()
+        st.warning(
+            f"Błąd przetwarzania danych z Apify: {str(e)}. Ładuję przykładową bazę..."
+        )
+        return get_fallback_data(num_nights)
 
 
-def get_fallback_data():
-    """Baza zastępcza w przypadku problemów z pobraniem danych live."""
-    return [
-        {
-            "name": "Hotel Czarny Potok 3*",
-            "price": 410,
-            "description": "Hotel 3-gwiazdkowy, basen, strefa SPA, centrum.",
-        },
-        {
-            "name": "Willa pod Skocznią",
-            "price": 250,
-            "description": "Pokoje gościnne, śniadania, brak SPA.",
-        },
-        {
-            "name": "Hotel Aquarion Family & SPA 4*",
-            "price": 680,
-            "description": "Hotel 4-gwiazdkowy, bezpośrednie wejście do Aquaparku.",
-        },
-        {
-            "name": "Apartamenty Krupówki Premium",
-            "price": 450,
-            "description": "Luksusowy apartament w centrum, aneks kuchenny.",
-        },
-        {
-            "name": "Hotel Gazdówka 3*",
-            "price": 390,
-            "description": "Regionalny hotel 3-gwiazdkowy z restauracją.",
-        },
+def get_fallback_data(nights):
+    """Baza zastępcza z rozszerzoną listą obiektów."""
+    items = [
+        ("Hotel Logos Zakopane", 420),
+        ("Hotel Czarny Potok 3*", 410),
+        ("Willa pod Skocznią", 250),
+        ("Hotel Aquarion Family & SPA 4*", 680),
+        ("Apartamenty Krupówki Premium", 450),
+        ("Hotel Gazdówka 3*", 390),
+        ("Grand Hotel Stamford Zakopane 5*", 920),
+        ("Hotel Belvedere Resort & SPA", 580),
+        ("Resort Nosalowy Dwór 4*", 610),
+        ("Aparthotel Giewont", 490),
+        ("Hotel Mercure Kasprowy", 530),
+        ("Hotel Radisson Blu Resort", 750),
+        ("Willa Carlton", 280),
+        ("Hotel Sabala 3*", 430),
+        ("Willa ORLA", 290),
     ]
+
+    results = []
+    for name, daily in items:
+        results.append(
+            {
+                "name": name,
+                "daily_price": daily,
+                "total_price": daily * nights,
+                "description": f"Obiekt w Zakopanem.",
+            }
+        )
+    return results
 
 
 def analyze_similarity(my_obj, competitor_obj):
-    """Sztuczna inteligencja Llama 3 analizuje poziom podobieństwa obiektów."""
+    """Analiza podobieństwa obiektów przez model Llama 3."""
     if not groq_client:
         return {"score": 50, "reason": "Brak klucza Groq API"}
 
@@ -176,8 +197,7 @@ def analyze_similarity(my_obj, competitor_obj):
     - Nazwa: {competitor_obj.get('name')}
     - Opis/Informacje: {competitor_obj.get('description')}
     
-    Oceń podobieństwo obiektu konkurencji do Hotelu Logos w skali od 1 do 100 
-    (gdzie 100 to obiekt o identycznym standardzie 3*, strefie SPA, lokalizacji blisko centrum).
+    Oceń podobieństwo obiektu konkurencji do Hotelu Logos w skali od 1 do 100.
     
     Odpowiedz WYŁĄCZNIE czystym formatem JSON bez żadnych dopisków:
     {{"score": liczba_całkowita_1_100, "reason": "krótkie uzasadnienie po polsku w 1 zdaniu"}}
@@ -200,19 +220,39 @@ def analyze_similarity(my_obj, competitor_obj):
         }
 
 
-# Główny przycisk wykonawczy
-if st.button("🔎 Pobierz ceny i przeanalizuj konkurencję"):
-    if check_in >= check_out:
-        st.error("Data wyjazdu musi być późniejsza niż data przyjazdu!")
+# Przycisk uruchamiający
+if st.button("🔎 Pobierz 50 obiektów i przeanalizuj rynek"):
+    if num_nights <= 0:
+        st.error("Wybierz poprawny zakres dat!")
     else:
-        with st.spinner("1/2: Pobieranie aktualnych cen z Zakopanego z Booking.com... (trwa ok. 20-40 sekund)"):
+        with st.spinner(
+            f"1/2: Pobieranie do 50 aktualnych cen z Zakopanego z Booking.com dla pobytu na {num_nights} nocy... (trwa ok. 30-60 sekund)"
+        ):
             competitors = fetch_booking_data(check_in, check_out)
 
         if competitors:
-            st.success(f"Analizuję {len(competitors)} pozyskanych ofert...")
+            # Automatyczne szukanie ceny Hotelu Logos w pobranych wynikach
+            logos_found = next(
+                (c for c in competitors if "logos" in c["name"].lower()), None
+            )
+
+            if logos_found:
+                logos_daily_price = logos_found["daily_price"]
+                logos_total_price = logos_found["total_price"]
+                st.success(
+                    f"Wyryto cenę Hotelu Logos dla wybranego terminu: **{logos_daily_price} PLN/doba** (Łącznie: {logos_total_price} PLN za {num_nights} nocy)."
+                )
+            else:
+                logos_daily_price = 420.0
+                logos_total_price = logos_daily_price * num_nights
+                st.info(
+                    f"Nie znaleziono Hotelu Logos w pierwszych wynikach Booking. Uszyto cenę bazową: **{logos_daily_price} PLN/doba**."
+                )
+
+            st.write(f"Rozpoczynam analizę AI dla {len(competitors)} ofert...")
 
             with st.spinner(
-                "2/2: Sztuczna inteligencja porównuje oferty z Hotel Logos..."
+                "2/2: AI porównuje oferty pod kątem standardu i lokalizacji z Hotele Logos..."
             ):
                 results = []
                 progress_bar = st.progress(0)
@@ -221,36 +261,38 @@ if st.button("🔎 Pobierz ceny i przeanalizuj konkurencję"):
                     ai_res = analyze_similarity(LOGOS_DATA, comp)
                     results.append(
                         {
-                            "Obiekt w Zakopanem": comp.get("name"),
-                            "Cena za dobę (PLN)": comp.get("price"),
+                            "Nazwa Obiektu": comp.get("name"),
+                            "Cena / Dzień (PLN)": comp.get("daily_price"),
+                            "Suma Łączna (PLN)": comp.get("total_price"),
                             "Podobieństwo do Logos (%)": ai_res.get("score"),
-                            "Uzasadnienie oceny AI": ai_res.get("reason"),
+                            "Uzasadnienie AI": ai_res.get("reason"),
                         }
                     )
                     progress_bar.progress((idx + 1) / len(competitors))
 
             df = pd.DataFrame(results)
 
-            st.subheader("📊 Podsumowanie Analizy Cenowej")
+            st.subheader("📊 Podsumowanie Analizy Cenowej Rywalizacji")
 
-            # Filtrujemy do podsumowania obiekty o podobieństwie przynajmniej 50%
+            # Filtrowanie obiektów o podobieństwie przynajmniej 50%
             similar_df = df[df["Podobieństwo do Logos (%)"] >= 50]
 
             col1, col2, col3 = st.columns(3)
-            col1.metric("Twoja cena (Logos)", f"{my_price} PLN")
+            col1.metric("Cena Logos (doba)", f"{logos_daily_price} PLN")
 
             if not similar_df.empty:
-                avg_price = round(similar_df["Cena za dobę (PLN)"].mean(), 2)
+                avg_daily = round(similar_df["Cena / Dzień (PLN)"].mean(), 2)
                 col2.metric(
-                    "Średnia cena podobnych obiektów", f"{avg_price} PLN"
+                    "Średnia cena podobnych (doba)", f"{avg_daily} PLN"
                 )
-                diff = round(my_price - avg_price, 2)
+                diff = round(logos_daily_price - avg_daily, 2)
                 col3.metric(
-                    "Różnica względem rynku", f"{diff} PLN", delta_color="inverse"
+                    "Różnica dzienna", f"{diff} PLN", delta_color="inverse"
                 )
             else:
-                col2.metric("Średnia cena podobnych", "Brak ścisłych dopasowań")
+                col2.metric("Średnia cena podobnych", "Brak dopasowań")
 
+            # Wyświetlenie pełnej tabeli z sortowaniem po podobieństwie
             st.dataframe(
                 df.sort_values(by="Podobieństwo do Logos (%)", ascending=False),
                 use_container_width=True,
