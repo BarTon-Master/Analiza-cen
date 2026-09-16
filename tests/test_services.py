@@ -25,6 +25,14 @@ class FallbackTests(unittest.TestCase):
         self.assertEqual(snapshot.logos_total_price, 840.0)
         self.assertEqual(len(snapshot.offers), 10)
 
+    def test_search_options_are_forwarded_to_provider_input(self) -> None:
+        run_input = MarketService._base_input(
+            dt.date(2026, 10, 1), dt.date(2026, 10, 3), adults=3, rooms=2
+        )
+
+        self.assertEqual(run_input["adults"], 3)
+        self.assertEqual(run_input["rooms"], 2)
+
     def test_local_similarity_is_bounded(self) -> None:
         competitor = HotelOffer(
             "Hotel Test 3* SPA",

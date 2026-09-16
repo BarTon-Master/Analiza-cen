@@ -17,7 +17,7 @@ st.set_page_config(
     page_title="Logos Market Pulse",
     page_icon="◆",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed",
 )
 
 
@@ -27,10 +27,9 @@ def _load_theme() -> None:
 
 
 def _secret(name: str) -> str | None:
-    """Read Cloud secrets safely, then fall back to the local environment."""
     try:
         value = st.secrets.get(name)
-    except Exception:  # Streamlit raises a dedicated error when no secrets file exists.
+    except Exception:  # No secrets file in local/demo environments.
         value = None
     return value or os.getenv(name)
 
@@ -51,59 +50,71 @@ def _format_pln(value: float) -> str:
 def _render_header() -> None:
     st.markdown(
         """
-        <div class="brand-row">
-            <div class="brand-mark">L</div>
-            <div class="brand-name">LOGOS <span>MARKET PULSE</span></div>
-            <div class="status-pill"><i></i> REVENUE INTELLIGENCE</div>
-        </div>
-        <section class="hero">
-            <p class="eyebrow">ZAKOPANE · COMPETITIVE SET</p>
-            <h1>Właściwa cena.<br><em>Lepsza decyzja.</em></h1>
-            <p class="hero-copy">Porównaj pozycję Hotelu Logos z lokalnym rynkiem i zobacz, gdzie naprawdę powstaje przewaga cenowa.</p>
+        <nav class="top-nav">
+            <div class="brand"><span class="brand-mark">L</span><span>Logos Market Pulse<small>REVENUE INTELLIGENCE</small></span></div>
+            <div class="system-status"><i></i>SYSTEM GOTOWY</div>
+        </nav>
+        <section class="hero-shell">
+            <div class="hero-glow"></div>
+            <div class="hero-content">
+                <span class="hero-badge">ZAKOPANE · COMPETITIVE SET</span>
+                <h1>Cena, która<br><em>pracuje mądrzej.</em></h1>
+                <p>Zobacz pozycję Hotelu Logos na tle rynku. Szybki benchmark, trafne porównania i jedna czytelna rekomendacja.</p>
+            </div>
         </section>
         """,
         unsafe_allow_html=True,
     )
 
 
-def _render_sidebar() -> tuple[dt.date, dt.date, bool]:
+def _render_search() -> tuple[dt.date, dt.date, int, int, int, bool]:
     today = dt.date.today()
-    with st.sidebar:
-        st.markdown('<p class="sidebar-kicker">PARAMETRY ANALIZY</p>', unsafe_allow_html=True)
-        st.markdown("## Pobyt")
-        with st.form("search_form", border=False):
+    with st.form("search_form", border=False):
+        check_in_column, check_out_column, action_column = st.columns([1, 1, 0.72])
+        with check_in_column:
             check_in = st.date_input(
                 "Przyjazd",
                 today + dt.timedelta(days=7),
                 min_value=today,
                 format="DD.MM.YYYY",
             )
+        with check_out_column:
             check_out = st.date_input(
                 "Wyjazd",
                 today + dt.timedelta(days=8),
                 min_value=today + dt.timedelta(days=1),
                 format="DD.MM.YYYY",
             )
-            nights = max((check_out - check_in).days, 0)
-            night_label = "noc" if nights == 1 else "noce" if 2 <= nights <= 4 else "nocy"
-            st.markdown(
-                f'<div class="stay-summary"><span>DŁUGOŚĆ POBYTU</span><strong>{nights} {night_label}</strong></div>',
-                unsafe_allow_html=True,
-            )
+        with action_column:
             submitted = st.form_submit_button(
-                "Uruchom analizę  →", type="primary", use_container_width=True
+                "Analizuj rynek  →", type="primary", use_container_width=True
             )
 
+        with st.expander("Więcej opcji"):
+            guests_column, rooms_column, results_column = st.columns(3)
+            adults = guests_column.selectbox("Goście", (1, 2, 3, 4), index=1)
+            rooms = rooms_column.selectbox("Pokoje", (1, 2, 3), index=0)
+            max_items = results_column.selectbox("Liczba porównań", (10, 15, 20), index=2)
+
+        nights = max((check_out - check_in).days, 0)
+        night_label = "noc" if nights == 1 else "noce" if 2 <= nights <= 4 else "nocy"
         st.markdown(
-            """
-            <div class="sidebar-note">
-                <span>METODOLOGIA</span>
-                <p>Ceny dla 2 osób i 1 pokoju. Podobieństwo uwzględnia standard, SPA, typ obiektu i lokalizację.</p>
-            </div>
-            """,
+            f'<div class="search-summary"><span>✓</span>{adults} gości · {rooms} pokój/pokoje · {nights} {night_label} · do {max_items} ofert</div>',
             unsafe_allow_html=True,
         )
-    return check_in, check_out, submitted
+    return check_in, check_out, adults, rooms, max_items, submitted
+
+
+def _render_error_state(message: str) -> None:
+    st.markdown(
+        f"""
+        <div class="error-state">
+            <span>!</span>
+            <div><strong>Nie udało się przygotować analizy</strong><p>{message}</p></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def _run_analysis(
@@ -111,29 +122,43 @@ def _run_analysis(
     similarity_service: SimilarityService,
     check_in: dt.date,
     check_out: dt.date,
+    adults: int,
+    rooms: int,
+    max_items: int,
 ) -> None:
-    nights = (check_out - check_in).days
-    if nights <= 0:
-        st.error("Data wyjazdu musi być późniejsza niż data przyjazdu.")
+    if check_out <= check_in:
+        _render_error_state("Data wyjazdu musi być późniejsza niż data przyjazdu.")
         return
 
-    with st.spinner("Pobieram aktualne ceny rynkowe…"):
-        snapshot = market_service.get_snapshot(check_in, check_out)
+    try:
+        with st.spinner("Pobieram aktualne ceny rynkowe…"):
+            snapshot = market_service.get_snapshot(
+                check_in,
+                check_out,
+                adults=adults,
+                rooms=rooms,
+                max_items=max_items,
+            )
 
-    competitors = [offer for offer in snapshot.offers if "logos" not in offer.name.lower()]
-    if not competitors:
-        st.error("Nie znaleziono ofert do porównania. Spróbuj ponownie później.")
-        return
+        competitors = [offer for offer in snapshot.offers if "logos" not in offer.name.lower()]
+        if not competitors:
+            _render_error_state("Brak ofert dla wybranych parametrów. Zmień termin lub opcje.")
+            return
 
-    analyses: list[AnalysisResult] = []
-    progress = st.progress(0, text="Oceniam podobieństwo obiektów…")
-    for index, competitor in enumerate(competitors):
-        analyses.append(similarity_service.compare(LOGOS_PROFILE, competitor))
-        progress.progress(
-            (index + 1) / len(competitors),
-            text=f"Analizuję rynek · {index + 1}/{len(competitors)}",
+        analyses: list[AnalysisResult] = []
+        progress = st.progress(0, text="Oceniam podobieństwo obiektów…")
+        for index, competitor in enumerate(competitors):
+            analyses.append(similarity_service.compare(LOGOS_PROFILE, competitor))
+            progress.progress(
+                (index + 1) / len(competitors),
+                text=f"Analizuję rynek · {index + 1}/{len(competitors)}",
+            )
+        progress.empty()
+    except Exception:
+        _render_error_state(
+            "Spróbuj ponownie za chwilę. Jeśli problem wraca, sprawdź konfigurację API."
         )
-    progress.empty()
+        return
 
     st.session_state["report"] = {
         "snapshot": snapshot,
@@ -161,19 +186,26 @@ def _report_dataframe(
     ).sort_values(["Podobieństwo", "Cena / noc"], ascending=[False, True])
 
 
+def _render_empty_state() -> None:
+    st.markdown(
+        """
+        <section class="empty-section">
+            <div class="section-heading"><span>CO OTRZYMASZ</span><h2>Decyzja cenowa bez zgadywania.</h2></div>
+            <div class="feature-grid">
+                <article><b>01</b><h3>Aktualny benchmark</h3><p>Cena Logos zestawiona z porównywalnymi ofertami w Zakopanem.</p></article>
+                <article><b>02</b><h3>Trafny competitive set</h3><p>Podobieństwo według standardu, SPA, typu obiektu i lokalizacji.</p></article>
+                <article><b>03</b><h3>Czytelna pozycja</h3><p>Od razu widzisz, czy oferta jest powyżej czy poniżej rynku.</p></article>
+            </div>
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def _render_report() -> None:
     report = st.session_state.get("report")
     if not report:
-        st.markdown(
-            """
-            <div class="empty-state">
-                <span>01</span>
-                <h3>Twój rynek w jednym widoku</h3>
-                <p>Wybierz termin i uruchom analizę. Otrzymasz benchmark cenowy oraz ranking najbardziej zbliżonych obiektów.</p>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        _render_empty_state()
         return
 
     snapshot = report["snapshot"]
@@ -189,12 +221,13 @@ def _render_report() -> None:
     price_delta = snapshot.logos_nightly_price - average_price
     market_position = "powyżej" if price_delta > 0 else "poniżej"
     source_label = "DANE LIVE" if snapshot.is_live else "TRYB DEMO"
+    source_class = "live" if snapshot.is_live else "demo"
 
     st.markdown(
         f"""
         <div class="report-heading">
-            <div><p class="eyebrow">RAPORT RYNKOWY</p><h2>{check_in:%d.%m} — {check_out:%d.%m.%Y}</h2></div>
-            <div class="source-pill {"live" if snapshot.is_live else "demo"}">{source_label}</div>
+            <div><span>RAPORT RYNKOWY</span><h2>{check_in:%d.%m} — {check_out:%d.%m.%Y}</h2></div>
+            <b class="source-pill {source_class}">{source_label}</b>
         </div>
         """,
         unsafe_allow_html=True,
@@ -237,19 +270,22 @@ market_service, similarity_service = _build_services(
     _secret("APIFY_API_KEY"), _secret("GROQ_API_KEY")
 )
 _render_header()
-selected_check_in, selected_check_out, search_submitted = _render_sidebar()
+check_in, check_out, adults, rooms, max_items, submitted = _render_search()
 
-if search_submitted:
+if submitted:
     _run_analysis(
         market_service,
         similarity_service,
-        selected_check_in,
-        selected_check_out,
+        check_in,
+        check_out,
+        adults,
+        rooms,
+        max_items,
     )
 
 _render_report()
 
 st.markdown(
-    f'<footer>{APP_COPY["footer"]} <a href="{LOGOS_PROFILE.url}" target="_blank">Hotel Logos Zakopane ↗</a></footer>',
+    f'<footer><span>{APP_COPY["footer"]}</span><a href="{LOGOS_PROFILE.url}" target="_blank">Hotel Logos Zakopane ↗</a></footer>',
     unsafe_allow_html=True,
 )

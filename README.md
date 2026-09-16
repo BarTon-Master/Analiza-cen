@@ -40,4 +40,4 @@ Bez kluczy aplikacja korzysta z danych demonstracyjnych i lokalnej oceny podobie
 
 - `app.py` — widok i orkiestracja,
 - `hotel_monitor/` — modele domenowe, konfiguracja i integracje,
-- `assets/theme.css` — warstwa wizualna.
+- `assets/theme.css` — nowoczesny motyw i integracja ze Streamlit.

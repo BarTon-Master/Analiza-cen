@@ -45,7 +45,15 @@ class MarketService:
     def __init__(self, client: ApifyClient | None) -> None:
         self._client = client
 
-    def get_snapshot(self, check_in: dt.date, check_out: dt.date) -> MarketSnapshot:
+    def get_snapshot(
+        self,
+        check_in: dt.date,
+        check_out: dt.date,
+        *,
+        adults: int = 2,
+        rooms: int = 1,
+        max_items: int = 20,
+    ) -> MarketSnapshot:
         nights = (check_out - check_in).days
         if nights <= 0:
             raise ValueError("Check-out must be later than check-in")
@@ -55,8 +63,8 @@ class MarketService:
             warnings.append("Brak APIFY_API_KEY — pokazujemy dane demonstracyjne.")
             return self._fallback_snapshot(nights, warnings)
 
-        logos_total = self._fetch_logos_price(check_in, check_out)
-        offers = self._fetch_market_offers(check_in, check_out, nights)
+        logos_total = self._fetch_logos_price(check_in, check_out, adults, rooms)
+        offers = self._fetch_market_offers(check_in, check_out, nights, adults, rooms, max_items)
         if not offers:
             warnings.append(
                 "Usługa cenowa jest chwilowo niedostępna — pokazujemy dane demonstracyjne."
@@ -79,8 +87,10 @@ class MarketService:
             warnings=warnings,
         )
 
-    def _fetch_logos_price(self, check_in: dt.date, check_out: dt.date) -> float | None:
-        run_input = self._base_input(check_in, check_out) | {
+    def _fetch_logos_price(
+        self, check_in: dt.date, check_out: dt.date, adults: int, rooms: int
+    ) -> float | None:
+        run_input = self._base_input(check_in, check_out, adults, rooms) | {
             "startUrls": [{"url": LOGOS_PROFILE.url}]
         }
         items = self._run_first_available(APIFY_ACTORS[:2], run_input)
@@ -89,12 +99,18 @@ class MarketService:
         return self._item_price(items[0])
 
     def _fetch_market_offers(
-        self, check_in: dt.date, check_out: dt.date, nights: int
+        self,
+        check_in: dt.date,
+        check_out: dt.date,
+        nights: int,
+        adults: int,
+        rooms: int,
+        max_items: int,
     ) -> list[HotelOffer]:
-        run_input = self._base_input(check_in, check_out) | {
+        run_input = self._base_input(check_in, check_out, adults, rooms) | {
             "search": "Zakopane",
             "searchLocation": "Zakopane",
-            "maxItems": 20,
+            "maxItems": max_items,
         }
         items = self._run_first_available(APIFY_ACTORS, run_input)
         return [offer for item in items if (offer := self._to_offer(item, nights))]
@@ -116,12 +132,14 @@ class MarketService:
         return []
 
     @staticmethod
-    def _base_input(check_in: dt.date, check_out: dt.date) -> dict[str, Any]:
+    def _base_input(
+        check_in: dt.date, check_out: dt.date, adults: int, rooms: int
+    ) -> dict[str, Any]:
         return {
             "checkIn": check_in.isoformat(),
             "checkOut": check_out.isoformat(),
-            "adults": 2,
-            "rooms": 1,
+            "adults": adults,
+            "rooms": rooms,
             "currency": "PLN",
         }
 
